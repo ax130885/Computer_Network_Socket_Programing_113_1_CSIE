@@ -3,7 +3,7 @@
 Title: 計算機網路 Socket Programing Phase 1   
 Student ID: R12631070  
 Name: 林育新  
-YouTube: 
+YouTube: https://youtu.be/uChRCDDe_P4
 ---
 # 編譯與執行環境
 Linux
