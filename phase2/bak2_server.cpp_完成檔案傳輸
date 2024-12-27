@@ -1,0 +1,482 @@
+#include <iostream>
+#include <string>
+#include <unordered_map>
+#include <cstring>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <queue>
+#include <vector>
+#include <memory>     // 引入 std::unique_ptr
+#include <fstream>    // 引入 std::ofstream
+#include <sys/stat.h> // 引入 struct stat
+
+#define MAX_THREADS 10
+#define CHUNCK_SIZE (4 * 1024 * 1024)
+
+// 用戶資料庫
+std::unordered_map<std::string, std::string> users;
+
+// 客戶端連接佇列
+std::queue<int> client_queue;
+pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER; // 初始化互斥鎖
+pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;    // 初始化條件變數
+
+// 註冊用戶
+bool registerUser(const std::string &username, const std::string &password)
+{
+    if (users.find(username) != users.end())
+    {
+        return false; // 用戶已存在
+    }
+    users[username] = password;
+    return true;
+}
+
+// 登入用戶
+bool loginUser(const std::string &username, const std::string &password)
+{
+    auto it = users.find(username);
+    if (it != users.end() && it->second == password)
+    {
+        return true;
+    }
+    return false;
+}
+
+void handleLoggedInUser(int client_socket, const std::string &username)
+{
+    char buffer[4096];
+    std::string prompt;
+
+    while (1)
+    {
+        std::string menu = "\n選擇服務:\n1. 回聲\n2. 傳送訊息給伺服器\n3. 傳送文件給伺服器\n9. 離開\n請輸入阿拉伯數字以選擇模式: ";
+        std::cout << "User " << username << "選擇服務\n"
+                  << std::endl;
+        send(client_socket, menu.c_str(), menu.size(), 0);
+        memset(buffer, 0, 4096);
+        int bytes_received = recv(client_socket, buffer, 4096, 0);
+        if (bytes_received <= 0)
+        {
+            close(client_socket);
+            return;
+        }
+
+        // 印出buffer內容
+        if (bytes_received > 0)
+        {
+            std::cout << std::string(buffer, bytes_received) << std::endl;
+        }
+
+        std::string service_choice(buffer, bytes_received);
+        service_choice = service_choice.substr(0, service_choice.find('\n')); // 去除換行符號
+        if (service_choice == "1")
+        {
+            prompt = "現正使用1. 回聲\n請輸入訊息: ";
+            std::cout << "User " << username << " 現正使用1. 回聲\n"
+                      << std::endl;
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            if (bytes_received <= 0)
+            {
+                close(client_socket);
+                return;
+            }
+            std::string message(buffer, bytes_received);
+            send(client_socket, message.c_str(), message.size(), 0);
+        }
+        else if (service_choice == "2")
+        {
+            prompt = "現正使用2. 傳送訊息給伺服器\n請輸入訊息: ";
+            std::cout << "User " << username << " 現正使用2. 傳送訊息給伺服器\n"
+                      << std::endl;
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            if (bytes_received <= 0)
+            {
+                close(client_socket);
+                return;
+            }
+            std::string message(buffer, bytes_received);
+            std::cout << "收到來自 " << username << " 的訊息: " << message << std::endl;
+        }
+        else if (service_choice == "9")
+        {
+            prompt = "程式執行完畢！ 登出並離開\n";
+            std::cout << "User " << username << " 程式執行完畢！ 登出並離開\n"
+                      << std::endl;
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            close(client_socket);
+            return;
+        }
+        else if (service_choice == "3")
+        {
+            prompt = "現正使用3. 傳送文件給伺服器\n請輸入文件名: ";
+            std::cout << "User " << username << " 現正使用3. 傳送文件給伺服器(暫不支持資料夾 僅能傳送單一檔案)\n"
+                      << std::endl;
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+
+            // 接收client端有無讀取文件成功
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            // 如果收到"open_file_success"，代表client端讀取文件成功
+            if (bytes_received > 0 && std::string(buffer, bytes_received) == "open_file_success")
+            {
+                std::cout << "Client opened file successfully" << std::endl;
+                // 發送確認訊息給客戶端
+                std::string confirmation = "File opened successfully";
+                send(client_socket, confirmation.c_str(), confirmation.size(), 0);
+                std::cout << "Client opened file successfully" << std::endl;
+            }
+            // 如果收到"open_file_failed"，代表client端讀取文件失敗
+            else
+            {
+                std::cerr << "Client failed to open file" << std::endl;
+                close(client_socket);
+                return;
+            }
+
+            // 接收文件名
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            // 印出client端傳來的文件名
+            std::cout << "User " << username << " 輸入文件名: " << std::string(buffer, bytes_received) << std::endl;
+            // 如果接收失敗或者接收到的文件名為空，則關閉socket
+            if (bytes_received <= 0)
+            {
+                close(client_socket);
+                return;
+            }
+            std::string filename(buffer, bytes_received);
+
+            // 檢查並創建 download 資料夾
+            struct stat info;
+            if (stat("download", &info) != 0)
+            {
+                // 資料夾不存在，創建資料夾
+                if (mkdir("download", 0777) == -1)
+                {
+                    std::cerr << "Failed to create directory: download" << std::endl;
+                    close(client_socket);
+                    return;
+                }
+                std::cout << "download 資料夾不存在，新建資料夾" << std::endl;
+            }
+            else if (!(info.st_mode & S_IFDIR))
+            {
+                std::cerr << "download is not a directory" << std::endl;
+                close(client_socket);
+                return;
+            }
+
+            std::string filepath = "download/" + filename;
+
+            // 創建文件
+            std::ofstream outfile(filepath, std::ios::binary);
+            std::cout << "User " << username << " 創建文件: " << filepath << std::endl;
+
+            if (!outfile)
+            {
+                std::cerr << "Failed to open file for writing: " << filepath << std::endl;
+                close(client_socket);
+                return;
+            }
+
+            // 接收檔案大小
+            std::streamsize file_size;
+            recv(client_socket, &file_size, sizeof(file_size), 0);
+            std::cout << "Expected file size: " << file_size << " bytes" << std::endl;
+
+            // 接收檔案內容
+            char file_buffer[CHUNCK_SIZE];
+            std::streamsize total_received = 0;
+
+            while (total_received < file_size)
+            {
+                memset(file_buffer, 0, CHUNCK_SIZE);
+                // 計算剩餘的字節數
+                size_t remaining = file_size - total_received;
+                // 決定每次接收多少字節數
+                std::streamsize to_receive = std::min(static_cast<std::streamsize>(remaining), static_cast<std::streamsize>(CHUNCK_SIZE));
+
+                // 接收文件數據
+                bytes_received = recv(client_socket, file_buffer, to_receive, 0);
+                if (bytes_received <= 0)
+                {
+                    std::cerr << "Error receiving file data" << std::endl;
+                    break;
+                }
+
+                // 寫入文件
+                outfile.write(file_buffer, bytes_received);
+                total_received += bytes_received;
+
+                // 印出傳輸進度
+                float progress = (float)total_received / file_size * 100;
+                std::cout << "\rReceiving: " << progress << "%" << std::flush;
+            }
+            outfile.close();
+            std::cout << "File received: " << filepath << std::endl;
+
+            // 發送確認訊息給客戶端
+            std::string confirmation = "File received successfully\n";
+            send(client_socket, confirmation.c_str(), confirmation.size(), 0);
+        }
+        else
+        {
+            prompt = "未知的選項，請重新選擇功能。\n";
+            std::cout << "User " << username << " 未知的選項，請重新選擇功能。\n"
+                      << std::endl;
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+        }
+        // 延遲0.1秒 避免send的內容跟後面合在一起送出
+        usleep(100000);
+    }
+}
+
+// 處理客戶端連線
+void *handleClient(void *arg)
+{
+    std::unique_ptr<int> client_socket_ptr = std::make_unique<int>(*static_cast<int *>(arg)); // 將 void* 轉換為 unique_ptr
+    int client_socket = *client_socket_ptr;                                                   // 使用解引用
+
+    char buffer[4096];
+    std::string username;
+
+    // 歡迎訊息
+    std::string welcomeMsg = "歡迎來到伺服器！\n1. 註冊\n2. 登入\n9. 離開\n請輸入阿拉伯數字以選擇模式: ";
+    send(client_socket, welcomeMsg.c_str(), welcomeMsg.size(), 0);
+
+    std::string prompt;
+
+    while (true)
+    {
+        memset(buffer, 0, 4096);
+        int bytes_received = recv(client_socket, buffer, 4096, 0);
+        if (bytes_received <= 0)
+        {
+            close(client_socket);
+            return nullptr;
+        }
+
+        std::string choice(buffer, bytes_received);
+
+        if (choice == "1") // 註冊
+        {
+            prompt = "請輸入用戶名: ";
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            if (bytes_received <= 0)
+            {
+                close(client_socket);
+                return nullptr;
+            }
+            std::string username(buffer, bytes_received);
+
+            prompt = "請輸入密碼: ";
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            if (bytes_received <= 0)
+            {
+                close(client_socket);
+                return nullptr;
+            }
+            std::string password(buffer, bytes_received);
+
+            if (registerUser(username, password))
+            {
+                prompt = "註冊成功！\n請重新選擇功能。\n";
+                std::cout << "User " << username << " 註冊成功\n"
+                          << std::endl;
+                send(client_socket, prompt.c_str(), prompt.size(), 0);
+            }
+            else
+            {
+                prompt = "用戶已存在，註冊失敗。\n請重新選擇功能。\n";
+                std::cout << "User " << username << " 用戶已存在，註冊失敗\n"
+                          << std::endl;
+                send(client_socket, prompt.c_str(), prompt.size(), 0);
+            }
+        }
+        else if (choice == "2") // 登入
+        {
+            prompt = "請輸入用戶名: ";
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            if (bytes_received <= 0)
+            {
+                close(client_socket);
+                return nullptr;
+            }
+            username = std::string(buffer, bytes_received);
+
+            prompt = "請輸入密碼: ";
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            memset(buffer, 0, 4096);
+            bytes_received = recv(client_socket, buffer, 4096, 0);
+            if (bytes_received <= 0)
+            {
+                close(client_socket);
+                return nullptr;
+            }
+            std::string password(buffer, bytes_received);
+
+            if (loginUser(username, password))
+            {
+                prompt = "登入成功！\n";
+                std::cout << "User " << username << " 登入成功\n"
+                          << std::endl;
+                send(client_socket, prompt.c_str(), prompt.size(), 0);
+                // 延遲0.1秒 避免send的內容跟後面合在一起送出
+                usleep(100000);
+                // 重點:處理登入後功能
+                handleLoggedInUser(client_socket, username);
+                break;
+            }
+            else
+            {
+                prompt = "登入失敗，用戶名或密碼錯誤。\n請重新選擇功能。\n";
+                std::cout << "User " << username << " 登入失敗，用戶名或密碼錯誤\n"
+                          << std::endl;
+                send(client_socket, prompt.c_str(), prompt.size(), 0);
+            }
+        }
+        else if (choice == "9") // 離開
+        {
+            prompt = "註冊選單執行完畢！ 離開\n";
+            std::cout << "User " << username << " 註冊選單執行完畢！ 離開\n"
+                      << std::endl;
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+            close(client_socket);
+            return nullptr;
+        }
+        else
+        {
+            prompt = "未知的選項，請重新輸入功能代號。\n";
+            std::cout << "User " << username << " 未知的選項，請重新輸入功能代號\n"
+                      << std::endl;
+            send(client_socket, prompt.c_str(), prompt.size(), 0);
+        }
+        // 延遲0.1秒 避免send的內容跟後面合在一起送出
+        usleep(100000);
+    }
+
+    close(client_socket);
+    return nullptr;
+}
+
+void *workerThread(void *arg)
+{
+    while (true)
+    {
+        std::unique_ptr<int> client_socket = nullptr; // 因為要傳給handleClient，所以要用手動管理記憶體。否則直接給定局部變數，會在handleClient執行完畢後被釋放。
+
+        // 先鎖住mutex，然後檢查佇列是否為空，如果是空的，就等待條件變數觸發釋放這個鎖
+        pthread_mutex_lock(&queue_mutex);
+        while (client_queue.empty()) // 如果佇列為空，就等待條件變數，並且釋放queue_mutex。等到queue_cond被觸發，才會繼續執行
+        {
+            pthread_cond_wait(&queue_cond, &queue_mutex); // pthread_cond_wait(條件變數, 互斥鎖) 只有等待的時候會自動釋放互斥鎖，觸發的時候需要手動上鎖(在main的while(true)當中)
+        }
+
+        // 如果佇列不為空，就取出佇列的第一個元素
+        client_socket = std::make_unique<int>(client_queue.front()); // 動態分配記憶體，並從佇列中取出元素 // 取出佇列的第一個元素
+        client_queue.pop();                                          // 將取出的元素從佇列中刪除
+        pthread_mutex_unlock(&queue_mutex);                          // 解鎖互斥鎖
+
+        // 處理客戶端連線
+        handleClient(client_socket.get()); // 因為workerThread已經被多執行緒執行，因此handleClient也會被多執行緒執行。不需要再創建新的執行緒
+    }
+    return nullptr;
+}
+
+int main()
+{
+    // 創建伺服器 socket
+    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1)
+    {
+        std::cerr << "Failed to create socket" << std::endl;
+        return 1;
+    }
+
+    // 設定伺服器地址
+    sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(48763);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    // 綁定 socket 到指定的 IP 和 port
+    if (bind(server_socket, (sockaddr *)&server_addr, sizeof(server_addr)) == -1)
+    {
+        std::cerr << "Failed to bind to port 48763" << std::endl;
+        return 1;
+    }
+
+    // 監聽連線
+    if (listen(server_socket, SOMAXCONN) == -1)
+    {
+        std::cerr << "Failed to listen on socket" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Server is listening on port 48763" << std::endl;
+
+    // 創建工作執行緒
+    std::vector<pthread_t> threads(MAX_THREADS);
+    for (int i = 0; i < MAX_THREADS; ++i)
+    {
+        if (pthread_create(&threads[i], nullptr, workerThread, nullptr) != 0) // pthread_create(占用的執行緒tid, 執行緒的屬性(默認NULL), 執行函數, 執行函數的參數)
+        {
+            std::cerr << "Failed to create thread" << std::endl;
+            return 1;
+        }
+    }
+
+    while (true)
+    {
+        sockaddr_in client_addr;
+        socklen_t client_size = sizeof(client_addr);
+        // accept 會暫停直到有客戶端連線進來 並且回傳一個新的 socket 來處理這個連線
+        int client_socket = accept(server_socket, (sockaddr *)&client_addr, &client_size);
+        if (client_socket == -1)
+        {
+            std::cerr << "Failed to grab connection" << std::endl;
+            continue;
+        }
+
+        // 儲存客戶端的 IP 和 port
+        char client_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+        int client_port = ntohs(client_addr.sin_port);
+
+        std::cout << "Client connected: " << client_ip << ":" << client_port << std::endl;
+
+        // 將客戶端連接加入佇列
+        pthread_mutex_lock(&queue_mutex);   // 鎖住互斥鎖
+        client_queue.push(client_socket);   // 將 client_socket 加入 client_queue 佇列
+        pthread_cond_signal(&queue_cond);   // 喚醒一個等待的執行緒
+        pthread_mutex_unlock(&queue_mutex); // 解鎖互斥鎖
+    }
+
+    close(server_socket); // 關閉伺服器 socket
+
+    // 回收所有工作執行緒
+    for (pthread_t &thread : threads)
+    {
+        pthread_join(thread, nullptr);
+    }
+
+    // 銷毀互斥鎖和條件變數
+    pthread_mutex_destroy(&queue_mutex);
+    pthread_cond_destroy(&queue_cond);
+
+    return 0;
+}
