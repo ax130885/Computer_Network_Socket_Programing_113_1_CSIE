@@ -1,0 +1,14 @@
+詳細教學
+https://blog.gitguardian.com/rewriting-git-history-cheatsheet/#the-secret-is-beyond-the-last-commit?utm_source=product&utm_medium=product&utm_campaign=onboarding
+
+如果機密文件是最後一次提交
+直接使用以下指令 修改commit
+git add phase2/server.key phase2/server.crt phase2/server.csr
+git commit --amend 
+git push --all --force
+git push --tags --force
+
+如果機密文件是更早的提交
+git filter-repo --use-base-name --path server.key --path server.csr --path server.crt --invert-paths
+git remote add origin https://github.com/ax130885/Computer_Network_Socket_Programing_113_1_CSIE.git
+git push --all --force && git push --tags --force
