@@ -6,10 +6,10 @@ Name: 林育新
 YouTube: 
 ---
 # 編譯與執行環境
-Linux  
-openssl (CentOS7 當中使用 sudo yum install openssl-devel安裝)
+Linux (Windows需透過WSL方可使用)  
+openssl (CentOS7 當中使用 sudo yum install openssl-devel安裝) (ubuntu 當中使用 sudo apt install openssl, sudo apt install libssl-dev安裝)  
 
-# Compilation instructions
+# Compilation instructions  
 1. 將 server.cpp 和 client.cpp 當中的 #define SERVER_IP 修改為自己的IP
     ```cpp
     #define SERVER_IP "140.112.xxx.xxx"
@@ -218,5 +218,6 @@ openssl (CentOS7 當中使用 sudo yum install openssl-devel安裝)
     ```
 
 # Any additional information
-重新編譯以後，需要重新註冊帳密。  
-若無重新編譯，不用重新註冊!
+1. 如果OpenSSL版本不同，需要重新編譯，無法直接使用執行檔。
+
+2. 重新編譯以後，需要重新註冊帳密。若無重新編譯，不用重新註冊!
